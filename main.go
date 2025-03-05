@@ -49,6 +49,8 @@ type RetVal struct {
 	ChangedPort  int    // what port did the STUN server see after we sent a change request
 }
 
+var CLI CLIFlags
+
 type CLIFlags struct {
 	STUNServers []string `help:"STUN servers to use for detection" name:"stun-server" short:"s"`
 	STUNPort    int      `help:"STUN port to use for detection" default:"3478" short:"p"`
@@ -61,7 +63,6 @@ type CLIFlags struct {
 	NoIP        bool     `help:"Omit IP addresses in output" default:"false" short:"o"`
 }
 
-var CLI CLIFlags
 var logger *zap.SugaredLogger
 
 var (
@@ -80,12 +81,12 @@ func main() {
 	math.New(math.NewSource(time.Now().UnixNano()))
 
 	var cli CLIFlags
-	kctx := kong.Parse(&cli,
+	kctx := kong.Parse(&CLI,
+		// kctx := kong.Parse(&cli,
 		kong.Name("stunner"),
 		kong.Description("A CLI tool to check your NAT Type"),
 		kong.Vars{"version": Version},
 	)
-	
 
 	if cli.Version {
 		fmt.Printf("stunner %s\n", Version)
@@ -672,4 +673,3 @@ func printTables(results []PerServerResult, finalNAT string) {
 	tbl2.SetBorder(true)
 	tbl2.Render()
 }
-
