@@ -299,6 +299,19 @@ func finalizeNAT(results []PerServerResult, ports map[int]bool) (string, string,
 	return bestType, bestIP, bestPort
 }
 
+// getLocalIPForServer determines what local IP address would be used to reach a given server
+func getLocalIPForServer(server string) (string, error) {
+	// Create a temporary connection to the server to see what local IP is used
+	conn, err := net.Dial("udp", server)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String(), nil
+}
+
 func getNatType(sock *net.UDPConn, server string, software string) (string, RetVal) {
 	ret := stunTest(sock, server, "", software)
 	if !ret.Resp {
@@ -310,8 +323,19 @@ func getNatType(sock *net.UDPConn, server string, software string) (string, RetV
 		return Blocked, ret
 	}
 
-	localAddr := sock.LocalAddr().(*net.UDPAddr)
-	if exIP == localAddr.IP.String() {
+	// Get the actual local IP that would be used to reach this server
+	// instead of relying on the bind address which might be 0.0.0.0
+	actualLocalIP, err := getLocalIPForServer(server)
+	if err != nil {
+		logger.Debugf("Could not determine local IP for server %s: %v", server, err)
+		// Fall back to socket's local address (which might be 0.0.0.0)
+		localAddr := sock.LocalAddr().(*net.UDPAddr)
+		actualLocalIP = localAddr.IP.String()
+	}
+
+	logger.Debugf("Comparing external IP %s with actual local IP %s", exIP, actualLocalIP)
+
+	if exIP == actualLocalIP {
 		ret2 := stunTest(sock, server, "00000006", software)
 		if ret2.Resp {
 			return OpenInternet, ret2
@@ -595,7 +619,7 @@ func natDetailFor(n string) NatDetail {
 	case Blocked:
 		return NatDetail{"Hard", "The NAT or firewall is preventing inbound hole-punch attempts. Outbound connections do not facilitate inbound reachability."}
 	case OpenInternet:
-		return NatDetail{"Easy", "Your host is directly reachable from the internet."}
+		return NatDetail{"None", "Your host is directly reachable from the internet."}
 	case EndpointIndependentMapping:
 		return NatDetail{"Easy", "Reuses the same public port for all remote connections, enabling inbound hole punching from any peer once an outbound packet is sent."}
 	case AddressDependentFiltering:
@@ -696,22 +720,24 @@ func printTables(results []PerServerResult, finalNAT string, omit bool) {
 	details := natDetailFor(finalNAT)
 
 	var directConns string
-	if finalNAT == OpenInternet {
+	switch finalNAT {
+	case OpenInternet:
 		directConns = "All devices"
-	} else {
-		switch details.EasyVsHard {
-		case "Easy":
-			directConns = "No NAT, Easy NAT devices"
-		case "Hard":
-			directConns = "No NAT devices only"
-		default:
-			directConns = "Unknown"
-		}
+	case EndpointIndependentMapping, AddressDependentMapping:
+		directConns = "No NAT devices"
+	case AddressDependentFiltering, AddressAndPortDependentMapping:
+		directConns = "No NAT devices only"
+	case Blocked:
+		directConns = "None (blocked)"
+	default:
+		directConns = "Unknown"
 	}
 
 	// Style the Easy/Hard indicator
 	var difficultyStyled string
 	switch details.EasyVsHard {
+	case "None":
+		difficultyStyled = easyStyle.Render("✨ None")
 	case "Easy":
 		difficultyStyled = easyStyle.Render("✅ Easy")
 	case "Hard":
@@ -754,6 +780,8 @@ func getSummaryText(difficulty string) string {
 		Bold(true)
 
 	switch difficulty {
+	case "None":
+		return easyStyle.Render("🚀 Perfect! You have no NAT - ALL connections will be direct.")
 	case "Easy":
 		return easyStyle.Render("🎉 Great! The NAT you're behind should allow direct connections for many connections.")
 	case "Hard":
