@@ -12,7 +12,7 @@
 - **Verbose Debug Logging**: An optional `--debug` flag emits debug logs akin to `pystun3`, letting you trace each request/response.
 - **Tabular Output**: Results are displayed in tables for easy reading, e.g.:
 
-```
+```bash
 +----------------------------+-------+-----------+---------+
 |        STUN SERVER         | PORT  |    IP     | MAPPING |
 +----------------------------+-------+-----------+---------+
@@ -32,7 +32,7 @@
 
 Install from homebrew:
 
-```
+```bash
 brew install jaxxstorm/tap/stunner
 ```
 
@@ -40,9 +40,8 @@ brew install jaxxstorm/tap/stunner
 
 Download the binary from releases
 
-
-```
-VERSION=v0.0.8
+```bash
+VERSION=v0.0.10
 curl -L "https://github.com/jaxxstorm/stunner/releases/download/${VERSION}/stunner-${VERSION}-linux-amd64.tar.gz" | tar -xz
 ./stunner --version
 ```
@@ -51,8 +50,8 @@ curl -L "https://github.com/jaxxstorm/stunner/releases/download/${VERSION}/stunn
 
 If you have go installed you can build and install with
 
-```
-go install github.com/jaxxstorm/stunner@v0.0.8
+```bash
+go install github.com/jaxxstorm/stunner@latest
 ```
 
 The resulting binary will appear inside `$GOPATH/bin` which you may want in your `PATH`.
@@ -121,4 +120,3 @@ Stunner will:
 MIT
 
 ---
-
