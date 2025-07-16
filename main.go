@@ -12,7 +12,6 @@ import (
 	math "math/rand"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"tailscale.com/net/portmapper"
@@ -20,7 +19,7 @@ import (
 	"github.com/jackpal/gateway"
 
 	"github.com/alecthomas/kong"
-	"github.com/olekukonko/tablewriter"
+	"github.com/charmbracelet/lipgloss"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"tailscale.com/net/netmon"
@@ -85,7 +84,6 @@ func main() {
 		kong.Description("A CLI tool to check your NAT Type"),
 		kong.Vars{"version": Version},
 	)
-	
 
 	if CLI.Version {
 		fmt.Printf("stunner %s\n", Version)
@@ -614,12 +612,51 @@ func natDetailFor(n string) NatDetail {
 }
 
 func printTables(results []PerServerResult, finalNAT string, omit bool) {
+	// Define lipgloss styles
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FAFAFA")).
+		Background(lipgloss.Color("#7D56F4")).
+		Padding(0, 1).
+		MarginTop(1).
+		MarginBottom(1)
 
-	fmt.Println("================= STUN Results =================")
+	cardStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#874BFD")).
+		Padding(1, 2).
+		MarginBottom(1).
+		Width(70)
 
-	tbl := tablewriter.NewWriter(os.Stdout)
-	tbl.SetHeader([]string{"Stun Server", "Port", "IP", "Mapping"})
+	labelStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#F25D94"))
 
+	valueStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FAFAFA"))
+
+	// Easy/Hard color coding
+	easyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#04B575")).
+		Bold(true)
+
+	hardStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF5F87")).
+		Bold(true)
+
+	neutralStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFB86C")).
+		Bold(true)
+
+	// Print STUN Results section
+	fmt.Println(titleStyle.Render("🌐 STUN Results"))
+
+	if len(results) == 0 {
+		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5F87")).Render("No STUN results available"))
+		return
+	}
+
+	// Create vertical cards for each STUN server result
 	for _, r := range results {
 		portStr := "None"
 		ipStr := "None"
@@ -631,45 +668,97 @@ func printTables(results []PerServerResult, finalNAT string, omit bool) {
 				ipStr = r.ExternalIP
 			}
 		}
-		tbl.Append([]string{
-			r.Server,
-			portStr,
-			ipStr,
-			r.MappingProtocol,
-		})
-	}
-	tbl.SetBorder(true)
-	tbl.Render()
 
-	fmt.Println("================= NAT Type Detection =================")
+		// Style the mapping protocol
+		var mappingStyled string
+		switch r.MappingProtocol {
+		case "UPnP", "NAT-PMP", "PCP":
+			mappingStyled = easyStyle.Render(r.MappingProtocol)
+		case "None":
+			mappingStyled = hardStyle.Render(r.MappingProtocol)
+		default:
+			mappingStyled = neutralStyle.Render(r.MappingProtocol)
+		}
+
+		cardContent := fmt.Sprintf("%s %s\n%s %s\n%s %s\n%s %s",
+			labelStyle.Render("Server:"), valueStyle.Render(r.Server),
+			labelStyle.Render("Port:"), valueStyle.Render(portStr),
+			labelStyle.Render("IP Address:"), valueStyle.Render(ipStr),
+			labelStyle.Render("Mapping:"), mappingStyled,
+		)
+
+		fmt.Println(cardStyle.Render(cardContent))
+	}
+
+	// Print NAT Type Detection section
+	fmt.Println(titleStyle.Render("🔍 NAT Type Detection"))
 
 	details := natDetailFor(finalNAT)
-	tbl2 := tablewriter.NewWriter(os.Stdout)
-	tbl2.SetHeader([]string{"Result", "NAT Type", "Easy/Hard", "Detail", "Direct Connections With"})
 
 	var directConns string
-
 	if finalNAT == OpenInternet {
-		directConns = "All"
+		directConns = "All devices"
 	} else {
 		switch details.EasyVsHard {
 		case "Easy":
-			directConns = "No NAT, Easy NAT"
+			directConns = "No NAT, Easy NAT devices"
 		case "Hard":
-			directConns = "No NAT Only"
+			directConns = "No NAT devices only"
 		default:
 			directConns = "Unknown"
 		}
 	}
 
-	tbl2.Append([]string{
-		"Final",
-		finalNAT,
-		details.EasyVsHard,
-		details.Notes,
-		directConns,
-	})
-	tbl2.SetBorder(true)
-	tbl2.Render()
+	// Style the Easy/Hard indicator
+	var difficultyStyled string
+	switch details.EasyVsHard {
+	case "Easy":
+		difficultyStyled = easyStyle.Render("✅ Easy")
+	case "Hard":
+		difficultyStyled = hardStyle.Render("❌ Hard")
+	default:
+		difficultyStyled = neutralStyle.Render("❓ " + details.EasyVsHard)
+	}
+
+	// Create NAT result card
+	natCardStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#F25D94")).
+		Padding(1, 2).
+		MarginBottom(1).
+		Width(70)
+
+	natCardContent := fmt.Sprintf("%s %s\n\n%s %s\n\n%s %s\n\n%s\n%s\n\n%s %s",
+		labelStyle.Render("NAT Type:"), valueStyle.Render(finalNAT),
+		labelStyle.Render("Difficulty:"), difficultyStyled,
+		labelStyle.Render("Direct Connections:"), valueStyle.Render(directConns),
+		labelStyle.Render("Description:"),
+		valueStyle.Render(details.Notes),
+		labelStyle.Render("Status:"), getSummaryText(details.EasyVsHard),
+	)
+
+	fmt.Println(natCardStyle.Render(natCardContent))
 }
 
+func getSummaryText(difficulty string) string {
+	easyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#04B575")).
+		Bold(true)
+
+	hardStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF5F87")).
+		Bold(true)
+
+	neutralStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFB86C")).
+		Bold(true)
+
+	switch difficulty {
+	case "Easy":
+		return easyStyle.Render("🎉 Great! The NAT you're behind should allow direct connections for many connections.")
+	case "Hard":
+		return hardStyle.Render("⚠️  The NAT you're behind may require relay servers for connections.")
+	default:
+		return neutralStyle.Render("ℹ️  NAT detection was inconclusive.")
+	}
+}
