@@ -636,47 +636,47 @@ func natDetailFor(n string) NatDetail {
 }
 
 func printTables(results []PerServerResult, finalNAT string, omit bool) {
-	// Define lipgloss styles
+	// Define lipgloss styles with colors that work on both dark and light terminals
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#7D56F4")).
+		Foreground(lipgloss.Color("15")). // White text
+		Background(lipgloss.Color("57")). // Purple background
 		Padding(0, 1).
 		MarginTop(1).
 		MarginBottom(1)
 
 	cardStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#874BFD")).
+		BorderForeground(lipgloss.Color("57")). // Purple border
 		Padding(1, 2).
 		MarginBottom(1).
 		Width(70)
 
 	labelStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("#F25D94"))
+		Foreground(lipgloss.Color("13")) // Bright magenta
 
 	valueStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FAFAFA"))
+		Foreground(lipgloss.Color("")) // Use terminal's default foreground color
 
-	// Easy/Hard color coding
+	// Easy/Hard color coding with standard colors
 	easyStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#04B575")).
+		Foreground(lipgloss.Color("2")). // Green
 		Bold(true)
 
 	hardStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FF5F87")).
+		Foreground(lipgloss.Color("1")). // Red
 		Bold(true)
 
 	neutralStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFB86C")).
+		Foreground(lipgloss.Color("3")). // Yellow
 		Bold(true)
 
 	// Print STUN Results section
 	fmt.Println(titleStyle.Render("🌐 STUN Results"))
 
 	if len(results) == 0 {
-		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5F87")).Render("No STUN results available"))
+		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("No STUN results available"))
 		return
 	}
 
@@ -749,7 +749,7 @@ func printTables(results []PerServerResult, finalNAT string, omit bool) {
 	// Create NAT result card
 	natCardStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#F25D94")).
+		BorderForeground(lipgloss.Color("13")). // Bright magenta border
 		Padding(1, 2).
 		MarginBottom(1).
 		Width(70)
@@ -768,15 +768,15 @@ func printTables(results []PerServerResult, finalNAT string, omit bool) {
 
 func getSummaryText(difficulty string) string {
 	easyStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#04B575")).
+		Foreground(lipgloss.Color("2")). // Green
 		Bold(true)
 
 	hardStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FF5F87")).
+		Foreground(lipgloss.Color("1")). // Red
 		Bold(true)
 
 	neutralStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFB86C")).
+		Foreground(lipgloss.Color("3")). // Yellow
 		Bold(true)
 
 	switch difficulty {
