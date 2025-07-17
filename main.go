@@ -12,6 +12,7 @@ import (
 	math "math/rand"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"tailscale.com/net/portmapper"
@@ -33,6 +34,8 @@ const (
 	AddressDependentFiltering      = "Address-Dependent Filtering"
 	AddressDependentMapping        = "Address-Dependent Mapping"
 	AddressAndPortDependentMapping = "Address and Port-Dependent Mapping"
+	RestrictedConeNAT              = "Restricted Cone NAT"
+	PortRestrictedConeNAT          = "Port-Restricted Cone NAT"
 	ChangedAddressError            = "ChangedAddressError"
 )
 
@@ -101,6 +104,7 @@ func main() {
 		if err != nil {
 			logger.Fatal("error fetching DERP map: ", err)
 		}
+		logger.Debug("Note: DERP servers may not fully support STUN CHANGE-REQUEST attributes, which can affect NAT detection accuracy")
 	} else {
 		for _, s := range CLI.STUNServers {
 			s = fmt.Sprintf("%s:%d", s, CLI.STUNPort)
@@ -263,7 +267,10 @@ func finalizeNAT(results []PerServerResult, ports map[int]bool) (string, string,
 		return Blocked, "", 0
 	}
 
+	// Key insight: If we get different external ports from different servers,
+	// this is a strong indicator of Address-and-Port-Dependent mapping (Symmetric NAT)
 	if len(ports) > 1 {
+		logger.Debugf("Different external ports detected (%v) - indicating Address-and-Port-Dependent Mapping", ports)
 		for _, r := range results {
 			if r.ExternalIP != "" {
 				return AddressAndPortDependentMapping, r.ExternalIP, r.ExternalPort
@@ -272,11 +279,16 @@ func finalizeNAT(results []PerServerResult, ports map[int]bool) (string, string,
 		return AddressAndPortDependentMapping, "", 0
 	}
 
+	// All servers report the same external port - this is good for P2P
+	logger.Debugf("Same external port from all servers - indicating consistent mapping")
+
 	// NAT RFC mappings
 	priority := map[string]int{
-		OpenInternet:                   6,
-		EndpointIndependentMapping:     5,
-		AddressDependentMapping:        4,
+		OpenInternet:                   8,
+		EndpointIndependentMapping:     7,
+		RestrictedConeNAT:              6,
+		AddressDependentMapping:        5,
+		PortRestrictedConeNAT:          4,
 		AddressAndPortDependentMapping: 3,
 		AddressDependentFiltering:      2,
 		Blocked:                        0,
@@ -296,6 +308,8 @@ func finalizeNAT(results []PerServerResult, ports map[int]bool) (string, string,
 			bestPort = r.ExternalPort
 		}
 	}
+
+	logger.Debugf("Final NAT determination: %s (based on highest priority result)", bestType)
 	return bestType, bestIP, bestPort
 }
 
@@ -312,11 +326,41 @@ func getLocalIPForServer(server string) (string, error) {
 	return localAddr.IP.String(), nil
 }
 
+// isDerpServerLikely attempts to detect if we're talking to a DERP server
+// based on hostname patterns and response behavior
+func isDerpServerLikely(server string, originalResp, changeResp RetVal) bool {
+	// Check for Tailscale DERP server hostname patterns
+	if strings.Contains(server, "derp") && strings.Contains(server, "tailscale.com") {
+		return true
+	}
+
+	// Check for other DERP-like patterns
+	if strings.Contains(server, "derp") {
+		return true
+	}
+
+	// Check for response patterns that suggest DERP server behavior:
+	// - CHANGE-REQUEST returns identical response (suggests server ignoring flags)
+	// - Missing or identical CHANGED-ADDRESS info
+	if changeResp.Resp && originalResp.Resp {
+		if changeResp.ExternalIP == originalResp.ExternalIP &&
+			changeResp.ExternalPort == originalResp.ExternalPort &&
+			changeResp.ChangedIP == originalResp.ChangedIP &&
+			changeResp.ChangedPort == originalResp.ChangedPort {
+			return true
+		}
+	}
+
+	return false
+}
+
 func getNatType(sock *net.UDPConn, server string, software string) (string, RetVal) {
+	// Test I: Send a STUN Binding Request to the primary server
 	ret := stunTest(sock, server, "", software)
 	if !ret.Resp {
 		return Blocked, ret
 	}
+
 	exIP, exPort := ret.ExternalIP, ret.ExternalPort
 	chIP, chPort := ret.ChangedIP, ret.ChangedPort
 	if exIP == "" {
@@ -324,7 +368,6 @@ func getNatType(sock *net.UDPConn, server string, software string) (string, RetV
 	}
 
 	// Get the actual local IP that would be used to reach this server
-	// instead of relying on the bind address which might be 0.0.0.0
 	actualLocalIP, err := getLocalIPForServer(server)
 	if err != nil {
 		logger.Debugf("Could not determine local IP for server %s: %v", server, err)
@@ -335,29 +378,84 @@ func getNatType(sock *net.UDPConn, server string, software string) (string, RetV
 
 	logger.Debugf("Comparing external IP %s with actual local IP %s", exIP, actualLocalIP)
 
+	// Check if we're behind NAT by comparing external and local IPs
 	if exIP == actualLocalIP {
-		ret2 := stunTest(sock, server, "00000006", software)
+		// We're not behind NAT - Test II: Send change request (change IP and port)
+		isDerpServer := isDerpServerLikely(server, ret, RetVal{})
+
+		if isDerpServer {
+			logger.Debugf("DERP server detected - skipping CHANGE-REQUEST tests as they're unreliable")
+			return OpenInternet, ret
+		}
+
+		ret2 := stunTest(sock, server, "00000006", software) // Change IP and port
 		if ret2.Resp {
+			logger.Debugf("CHANGE-REQUEST test succeeded - confirmed No NAT")
 			return OpenInternet, ret2
 		}
+		logger.Debugf("CHANGE-REQUEST test failed - likely Address-Dependent Filtering")
 		return AddressDependentFiltering, ret2
 	}
 
+	// We're behind a NAT - now determine the NAT type using RFC 3489 algorithm
+	isDerpServer := isDerpServerLikely(server, ret, RetVal{})
+
+	if isDerpServer {
+		logger.Debugf("DERP server detected - using conservative classification without CHANGE-REQUEST tests")
+		// For DERP servers, we can't reliably test CHANGE-REQUEST, so use conservative approach
+		// Most home NATs are address-dependent or port-restricted
+		return AddressDependentMapping, ret
+	}
+
+	// Test II: Send change request (change IP and port) for traditional STUN servers
+	logger.Debugf("Testing with CHANGE-REQUEST: change IP and port")
 	ret2 := stunTest(sock, server, "00000006", software)
+
 	if ret2.Resp {
-		return EndpointIndependentMapping, ret2
-	}
-	ret3 := stunTestToIP(sock, chIP, chPort, "", software)
-	if !ret3.Resp {
-		return ChangedAddressError, ret3
-	}
-	if exIP == ret3.ExternalIP && exPort == ret3.ExternalPort {
-		ret4 := stunTestToIP(sock, chIP, chPort, "00000002", software)
-		if ret4.Resp {
-			return AddressDependentMapping, ret4
+		// Got response to change request - check if mapping actually changed
+		if ret2.ExternalIP != ret.ExternalIP || ret2.ExternalPort != ret.ExternalPort {
+			logger.Debugf("CHANGE-REQUEST response shows different mapping (IP:%s->%s, Port:%d->%d) - Full Cone NAT",
+				ret.ExternalIP, ret2.ExternalIP, ret.ExternalPort, ret2.ExternalPort)
+			return EndpointIndependentMapping, ret2
+		} else {
+			logger.Debugf("CHANGE-REQUEST response identical to original - server may not support CHANGE-REQUEST properly")
+			// Fallback to conservative classification
+			return AddressDependentMapping, ret
 		}
-		return AddressAndPortDependentMapping, ret4
 	}
+
+	// Change request failed - Test with changed address if available
+	if chIP == "" || chPort == 0 {
+		logger.Debugf("No CHANGED-ADDRESS available - cannot perform full classification")
+		return AddressDependentMapping, ret
+	}
+
+	// Test III: Send request to changed address (different IP, same port as original)
+	logger.Debugf("Testing connection to changed address %s:%d", chIP, chPort)
+	ret3 := stunTestToIP(sock, chIP, chPort, "", software)
+
+	if !ret3.Resp {
+		logger.Debugf("Could not reach changed address - likely Symmetric NAT")
+		return AddressAndPortDependentMapping, ret
+	}
+
+	// Check if we get the same external mapping from the changed address
+	if exIP == ret3.ExternalIP && exPort == ret3.ExternalPort {
+		// Same mapping from different server - now test change port only
+		logger.Debugf("Same mapping from changed address - testing port-only change request")
+		ret4 := stunTestToIP(sock, chIP, chPort, "00000002", software) // Change port only
+
+		if ret4.Resp {
+			logger.Debugf("Port-only change request succeeded - Restricted Cone NAT")
+			return RestrictedConeNAT, ret4
+		} else {
+			logger.Debugf("Port-only change request failed - Port-Restricted Cone NAT")
+			return PortRestrictedConeNAT, ret3
+		}
+	}
+
+	// Different mapping from different server - Symmetric NAT
+	logger.Debugf("Different mapping from changed address - Symmetric NAT (Address-and-Port-Dependent)")
 	return AddressAndPortDependentMapping, ret3
 }
 
@@ -596,6 +694,8 @@ func probePortmapAvailability() string {
 		return "None"
 	}
 
+	logger.Debugf("Port mapping probe results: UPnP=%v, PMP=%v, PCP=%v", probeResult.UPnP, probeResult.PMP, probeResult.PCP)
+
 	// If PCP is found, we label it "PCP".
 	// If PMP is found, we label it "NAT-PMP".
 	// If UPnP is found, we label it "UPnP".
@@ -628,6 +728,10 @@ func natDetailFor(n string) NatDetail {
 		return NatDetail{"Easy", "Uses one public port for each remote IP. Inbound connections must come from that IP."}
 	case AddressAndPortDependentMapping:
 		return NatDetail{"Hard", "Allocates different public ports for each remote IP:port combination, making inbound hole punching very difficult."}
+	case RestrictedConeNAT:
+		return NatDetail{"Easy", "All requests from the same internal IP:port use the same external IP:port. External hosts can send packets back only if the internal host has previously sent a packet to that external IP."}
+	case PortRestrictedConeNAT:
+		return NatDetail{"Hard", "Similar to Restricted Cone but also requires that the external port matches. External hosts can only send packets if the internal host has sent to that exact IP:port combination."}
 	case ChangedAddressError:
 		return NatDetail{"N/A", "An error occurred during NAT detection preventing a full classification."}
 	default:
@@ -708,7 +812,7 @@ func printTables(results []PerServerResult, finalNAT string, omit bool) {
 			labelStyle.Render("Server:"), valueStyle.Render(r.Server),
 			labelStyle.Render("Port:"), valueStyle.Render(portStr),
 			labelStyle.Render("IP Address:"), valueStyle.Render(ipStr),
-			labelStyle.Render("Mapping:"), mappingStyled,
+			labelStyle.Render("Port Mapping:"), mappingStyled,
 		)
 
 		fmt.Println(cardStyle.Render(cardContent))
@@ -723,9 +827,9 @@ func printTables(results []PerServerResult, finalNAT string, omit bool) {
 	switch finalNAT {
 	case OpenInternet:
 		directConns = "All devices"
-	case EndpointIndependentMapping, AddressDependentMapping:
-		directConns = "No NAT devices"
-	case AddressDependentFiltering, AddressAndPortDependentMapping:
+	case EndpointIndependentMapping, RestrictedConeNAT, AddressDependentMapping:
+		directConns = "Easy NAT + No NAT devices"
+	case PortRestrictedConeNAT, AddressDependentFiltering, AddressAndPortDependentMapping:
 		directConns = "No NAT devices only"
 	case Blocked:
 		directConns = "None (blocked)"
